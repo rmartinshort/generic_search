@@ -1,0 +1,226 @@
+
+import os
+import string
+import pandas as pd
+import numpy as np
+import spacy
+import logging
+from gensim.models.fasttext import FastText
+from generic_search.engine.utils import EpochLogger
+from tqdm import tqdm
+import nmslib
+from rank_bm25 import BM25Okapi
+import pickle
+
+
+class SearchEngine(object):
+
+    def __init__(self):
+
+        """
+        Fast fuzzy matching on a corpus held in memory
+        """
+
+        self.spacy_model = spacy.load("en_core_web_sm")
+        self.epoch_logger = EpochLogger()
+        self.corpus = None
+        self.vector_model = None
+        self.n_lim = None
+        self.matcher = None
+
+    @classmethod
+    def build_model(cls, corpus, vector_model, n_epochs=5, limit_docs=1e6, save_location=None):
+
+        """
+
+        :param corpus:
+        :param vector_model:
+        :param n_epochs:
+        :param limit_docs:
+        :param save_location:
+        :return:
+        """
+
+        if not os.path.isdir(save_location):
+            os.mkdir(save_location)
+
+        s = SearchEngine()
+        s.corpus = corpus
+        s.vector_model = vector_model
+        s.n_lim = limit_docs
+        corpus_weight_vectors = s.generate_vectorized_corpus(n_epochs=n_epochs, save_location=save_location)
+        s.matcher = s.generate_matcher(corpus_weight_vectors, save_location=save_location)
+
+        return s
+
+    @classmethod
+    def load_model_from_files(cls, original_corpus_file, vector_model_file, vectorized_corpus, matcher=None):
+
+        """
+
+        :param original_corpus_file:
+        :param vector_model_file:
+        :param vectorized_corpus:
+        :param matcher:
+        :return:
+        """
+
+        logging.info("Loading original corpus")
+        df = pd.read_csv(original_corpus_file, usecols=["text"])
+
+        s = SearchEngine()
+
+        logging.info("Loading vector model")
+        s.corpus = df["text"].str.lower().values
+        s.vector_model = FastText.load(vector_model_file)
+
+        logging.info("Loading vectorized corpus")
+        with open(vectorized_corpus, "rb") as f:
+            vectorized_corpus = pickle.load(f)
+
+        if matcher:
+            new_matcher = nmslib.init(method='hnsw', space='cosinesimil')
+            new_matcher.loadIndex(matcher, load_data=False)
+            s.matcher = new_matcher
+        else:
+            logging.info("Generating matcher index")
+            s.matcher = s.generate_matcher(vectorized_corpus, save_location=None)
+
+        return s
+
+    def suggest(self, input_query, n_return=10):
+
+        """
+
+        :param input_query:
+        :param n_return:
+        :return:
+        """
+
+        query_parts = self._preprocess(input_query)
+
+        query = [self.vector_model[w] for w in query_parts.split()]
+        query = np.mean(query, axis=0)
+
+        ids, distances = self.matcher.knnQuery(query, k=n_return)
+
+        # Display results of a search
+        distances_list = [None] * len(distances)
+        results_list = [None] * len(ids)
+        original_query_list = [None] * len(ids)
+        k = 0
+        for i, j in zip(ids, distances):
+            distances_list[k] = j
+            results_list[k] = self.corpus[i]
+            original_query_list[k] = input_query
+            k += 1
+
+        return pd.DataFrame({"query": original_query_list, "score": distances_list, "match": results_list})
+
+    def generate_vectorized_corpus(self, n_epochs=5, save_location=None):
+
+        """
+
+        :param n_epochs:
+        :param save_location:
+        :return:
+        """
+
+        logging.info("Tokenizing text")
+        tokenized_text = self._tokenize()
+
+        logging.info("Building vector vocab")
+        self._build_vector_vocab(tokenized_text)
+
+        logging.info("Training word vector model")
+        self._train_vector_model(tokenized_text, n_epochs=n_epochs)
+
+        logging.info("Generating BM25 weights")
+        corpus_weight_vectors = self._assign_weights(tokenized_text)
+
+        if save_location:
+            logging.info("Saving model")
+            self.vector_model.save(save_location + '/_fasttext.model')
+            f = open(save_location + "/weighted_doc_vects.p", "wb")
+            pickle.dump(corpus_weight_vectors, f)
+            f.close()
+
+        return corpus_weight_vectors
+
+    def _tokenize(self):
+
+        tokenized_text = []
+
+        # apply preprocessing to remove punctuation etc if present
+        corpus = [self._preprocess(x) for x in self.corpus]
+
+        for doc in tqdm(self.spacy_model.pipe(corpus, n_threads=2, disable=["tagger", "parser", "ner"])):
+            tok = [t.text for t in doc if (t.is_ascii and not t.is_punct and not t.is_space)]
+            tokenized_text.append(tok)
+
+        if not self.n_lim:
+            self.n_lim = len(tokenized_text) - 1
+        else:
+            self.n_lim = int(self.n_lim)
+
+        return tokenized_text
+
+    def _build_vector_vocab(self, tokenized_text):
+
+        self.vector_model.build_vocab(tokenized_text[:self.n_lim])
+
+    def _train_vector_model(self, tokenized_text, n_epochs=5):
+
+        self.vector_model.train(
+            tokenized_text[:self.n_lim],
+            epochs=n_epochs,
+            total_examples=self.vector_model.corpus_count,
+            total_words=self.vector_model.corpus_total_words,
+            callbacks=[self.epoch_logger])
+
+    def _assign_weights(self, tokenized_text):
+
+        bm25 = BM25Okapi(tokenized_text[:self.n_lim])
+        weighted_doc_vects = []
+
+        for i, doc in tqdm(enumerate(tokenized_text[:self.n_lim])):
+            doc_vector = []
+            for word in doc:
+                vector = self.vector_model[word]
+                weight = (bm25.idf[word] * ((bm25.k1 + 1.0) * bm25.doc_freqs[i][word])) / (
+                            bm25.k1 * (1.0 - bm25.b + bm25.b * (bm25.doc_len[i] / bm25.avgdl)) + bm25.doc_freqs[i][
+                        word])
+                weighted_vector = vector * weight
+                doc_vector.append(weighted_vector)
+
+            weighted_doc_vects.append(np.mean(doc_vector, axis=0))
+
+        return np.vstack(weighted_doc_vects)
+
+    @staticmethod
+    def generate_matcher(vectorized_corpus, save_location=None):
+
+        """
+
+        :param vectorized_corpus:
+        :param save_location:
+        :return:
+        """
+
+        # initialize a new index, using a HNSW index on Cosine Similarity
+        matcher = nmslib.init(method='hnsw', space='cosinesimil')
+        matcher.addDataPointBatch(vectorized_corpus)
+        matcher.createIndex({'post': 2}, print_progress=True)
+
+        if save_location:
+            matcher.saveIndex(save_location + "/saved_matcher.bin", save_data=False)
+            new_matcher = nmslib.init(method='hnsw', space='cosinesimil')
+            new_matcher.loadIndex(save_location + "/saved_matcher.bin", load_data=False)
+            return new_matcher
+        else:
+            return matcher
+
+    def _preprocess(self, text):
+
+        # remove stopwords?
+        return str(text).lower()
