@@ -186,14 +186,20 @@ class SearchEngine(object):
         for i, doc in tqdm(enumerate(tokenized_text[:self.n_lim])):
             doc_vector = []
             for word in doc:
+
                 vector = self.vector_model[word]
                 weight = (bm25.idf[word] * ((bm25.k1 + 1.0) * bm25.doc_freqs[i][word])) / (
                             bm25.k1 * (1.0 - bm25.b + bm25.b * (bm25.doc_len[i] / bm25.avgdl)) + bm25.doc_freqs[i][
                         word])
                 weighted_vector = vector * weight
+
                 doc_vector.append(weighted_vector)
 
-            weighted_doc_vects.append(np.mean(doc_vector, axis=0))
+
+            if len(doc_vector) == 0:
+                weighted_doc_vects.append(np.zeros(self.vector_model.vector_size))
+            else:
+                weighted_doc_vects.append(np.mean(doc_vector, axis=0))
 
         return np.vstack(weighted_doc_vects)
 
