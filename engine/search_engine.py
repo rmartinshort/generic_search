@@ -5,7 +5,9 @@ import pandas as pd
 import numpy as np
 import spacy
 import logging
+import gensim
 from gensim.models.fasttext import FastText
+from gensim.models.doc2vec import Doc2Vec, TaggedDocument
 from generic_search.engine.utils import EpochLogger
 from tqdm import tqdm
 import nmslib
@@ -32,6 +34,28 @@ class SearchEngine(object):
     def build_model(cls, corpus, vector_model, n_epochs=5, limit_docs=1e6, save_location=None):
 
         """
+
+        Has support for fasttext and doc2vec models. Use as follows
+
+        # For FastText
+        ft_model = FastText(
+        sg=1,  # use skip-gram: usually gives better results
+        size=50,  # embedding dimension (should be the same as the GLOVE vectors that are being used, so 50)
+        window=10,  # window size: 10 tokens before and 10 tokens after to get wider context
+        min_count=1,  # only consider tokens with at least n occurrences in the corpus
+        negative=15,  # negative subsampling: bigger than default to sample negative examples more
+        min_n=1,  # min character n-gram
+        max_n=5  # max character n-gram
+        )
+        
+        # For Doc2Vec
+        doc_model = Doc2Vec( 
+        vector_size=50, 
+        window=3,
+        epochs=10,
+        min_count=1, 
+        negative=15,
+        workers=4)
 
         :param corpus:
         :param vector_model:
@@ -129,18 +153,31 @@ class SearchEngine(object):
         logging.info("Tokenizing text")
         tokenized_text = self._tokenize()
 
+        if isinstance(self.vector_model,gensim.models.fasttext.FastText):
+            model_type = "fasttext"
+            model_text_feed = tokenized_text
+        elif isinstance(self.vector_model,gensim.models.doc2vec.Doc2Vec):
+            model_type = "doc2vec"
+            model_text_feed = [TaggedDocument(doc, [i]) for i, doc in enumerate(tokenized_text)]
+        else:
+            raise Warning("vector model must be of type gensim FastText or genism Doc2Vec")
+
         logging.info("Building vector vocab")
-        self._build_vector_vocab(tokenized_text)
+        self._build_vector_vocab(model_text_feed)
 
         logging.info("Training word vector model")
-        self._train_vector_model(tokenized_text, n_epochs=n_epochs)
+        self._train_vector_model(model_text_feed, n_epochs=n_epochs)
 
         logging.info("Generating BM25 weights")
         corpus_weight_vectors = self._assign_weights(tokenized_text)
 
         if save_location:
             logging.info("Saving model")
-            self.vector_model.save(save_location + '/_fasttext.model')
+            if model_type == "fasttext":
+                self.vector_model.save(save_location + '/_fasttext.model')
+            else:
+                self.vector_model.save(save_location + '/_doc2vec.model')
+
             f = open(save_location + "/weighted_doc_vects.p", "wb")
             pickle.dump(corpus_weight_vectors, f)
             f.close()
