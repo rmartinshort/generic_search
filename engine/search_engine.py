@@ -65,8 +65,10 @@ class SearchEngine(object):
         :return:
         """
 
-        if not os.path.isdir(save_location):
-            os.mkdir(save_location)
+
+        if save_location:
+            if not os.path.isdir(save_location):
+                os.mkdir(save_location)
 
         s = SearchEngine()
         s.corpus = corpus
@@ -90,7 +92,13 @@ class SearchEngine(object):
         """
 
         logging.info("Loading original corpus")
-        df = pd.read_csv(original_corpus_file, usecols=["text"])
+
+        try:
+            df = pd.read_csv(original_corpus_file, usecols=["text"])
+        except Exception as e:
+            raise Warning("Provided dataframe may not have a text column!")
+
+        assert "text" in df.columns
 
         s = SearchEngine()
 
