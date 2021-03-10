@@ -27,11 +27,11 @@ corpus = dataset["review"].tolist()
 # Set up the gensim model you want to use for the vectorization. 
 # Currently supports FastText and Doc2Vec models
 my_model = FastText(
-        sg=1,  # use skip-gram: usually gives better results
-        size=50,  # embedding dimension (should be the same as the GLOVE vectors that are being used, so 50)
+        sg=1,  # use skip-gram method, usually desirable (other option is CBOW)
+        size=50,  # embedding dimension 
         window=10,  # window size: 10 tokens before and 10 tokens after to get wider context
         min_count=1,  # only consider tokens with at least n occurrences in the corpus
-        negative=15,  # negative subsampling: bigger than default to sample negative examples more
+        negative=15,  # negative subsampling
         min_n=1,  # min character n-gram
         max_n=5  # max character n-gram
         )
