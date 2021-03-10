@@ -24,16 +24,19 @@ logging.basicConfig(format='%(asctime)s %(message)s',level=logging.INFO)
 # Provide the path to some dataset, here the classic IMDB movie dataset is used
 dataset = pd.read_csv("generic_search/test_datasets/IMDB Dataset.csv")
 corpus = dataset["review"].tolist()
+# Some of the reviews are very long. For this example we'll make the problem easier by just 
+# considering the first 10 words of each
+corpus = [" ".join(x.split()[:10]) for x in corpus]
 # Set up the gensim model you want to use for the vectorization. 
 # Currently supports FastText and Doc2Vec models
 my_model = FastText(
         sg=1,  # use skip-gram method, usually desirable (other option is CBOW)
         size=50,  # embedding dimension 
         window=10,  # window size: 10 tokens before and 10 tokens after to get wider context
-        min_count=1,  # only consider tokens with at least n occurrences in the corpus
+        min_count=5,  # only consider tokens with at least n occurrences in the corpus
         negative=15,  # negative subsampling
-        min_n=1,  # min character n-gram
-        max_n=5  # max character n-gram
+        min_n=2,  # min character n-gram
+        max_n=10  # max character n-gram
         )
 
 # Build vectorizer and index

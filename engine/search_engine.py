@@ -196,17 +196,18 @@ class SearchEngine(object):
 
         tokenized_text = []
 
-        # apply preprocessing to remove punctuation etc if present
+        if not self.n_lim:
+            self.n_lim = len(self.corpus) - 1
+        else:
+            self.n_lim = int(self.n_lim)
+
+        # apply preprocessing to remove punctuation e stc if present
         corpus = [self._preprocess(x) for x in self.corpus]
 
         for doc in tqdm(self.spacy_model.pipe(corpus, n_threads=2, disable=["tagger", "parser", "ner"])):
             tok = [t.text for t in doc if (t.is_ascii and not t.is_punct and not t.is_space)]
             tokenized_text.append(tok)
 
-        if not self.n_lim:
-            self.n_lim = len(tokenized_text) - 1
-        else:
-            self.n_lim = int(self.n_lim)
 
         return tokenized_text
 
