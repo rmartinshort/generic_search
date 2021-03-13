@@ -80,7 +80,7 @@ class SearchEngine(object):
         return s
 
     @classmethod
-    def load_model_from_files(cls, original_corpus_file, vector_model_file, vectorized_corpus, matcher=None):
+    def load_model_from_files(cls, original_corpus_file, vector_model_file, vector_model_type, vectorized_corpus, matcher=None):
 
         """
 
@@ -90,6 +90,8 @@ class SearchEngine(object):
         :param matcher:
         :return:
         """
+
+        assert vector_model_type in ["doc2vec", "fasttext"]
 
         logging.info("Loading original corpus")
 
@@ -104,7 +106,11 @@ class SearchEngine(object):
 
         logging.info("Loading vector model")
         s.corpus = df["text"].str.lower().values
-        s.vector_model = FastText.load(vector_model_file)
+
+        if vector_model_type == "fasttext":
+            s.vector_model = FastText.load(vector_model_file)
+        else:
+            s.vector_model = Doc2Vec.load(vector_model_file)
 
         logging.info("Loading vectorized corpus")
         with open(vectorized_corpus, "rb") as f:
@@ -201,12 +207,13 @@ class SearchEngine(object):
         else:
             self.n_lim = int(self.n_lim)
 
+
         # apply preprocessing to remove punctuation e stc if present
         corpus = [self._preprocess(x) for x in self.corpus]
 
-        for doc in tqdm(self.spacy_model.pipe(corpus, n_threads=2, disable=["tagger", "parser", "ner"])):
-            tok = [t.text for t in doc if (t.is_ascii and not t.is_punct and not t.is_space)]
-            tokenized_text.append(tok)
+        for doc in tqdm(self.spacy_model.pipe(corpus, n_threads=4, disable=["tagger", "parser", "ner"])):
+            tokens = [t.text for t in doc if (t.is_ascii and not t.is_punct and not t.is_space)]
+            tokenized_text.append(tokens)
 
 
         return tokenized_text
@@ -226,12 +233,13 @@ class SearchEngine(object):
 
     def _assign_weights(self, tokenized_text):
 
-        bm25 = BM25Okapi(tokenized_text[:self.n_lim])
-        weighted_doc_vects = []
+        text = tokenized_text[:self.n_lim]
+        bm25 = BM25Okapi(text)
+        weighted_doc_vects = [None]*len(text)
 
-        for i, doc in tqdm(enumerate(tokenized_text[:self.n_lim])):
-            doc_vector = []
-            for word in doc:
+        for i, doc in tqdm(enumerate(text)):
+            doc_vector = [None]*len(doc)
+            for j, word in enumerate(doc):
 
                 vector = self.vector_model[word]
                 weight = (bm25.idf[word] * ((bm25.k1 + 1.0) * bm25.doc_freqs[i][word])) / (
@@ -239,13 +247,13 @@ class SearchEngine(object):
                         word])
                 weighted_vector = vector * weight
 
-                doc_vector.append(weighted_vector)
+                doc_vector[j] = weighted_vector
 
 
             if len(doc_vector) == 0:
-                weighted_doc_vects.append(np.zeros(self.vector_model.vector_size))
+                weighted_doc_vects[i] = np.zeros(self.vector_model.vector_size)
             else:
-                weighted_doc_vects.append(np.mean(doc_vector, axis=0))
+                weighted_doc_vects[i] = np.mean(doc_vector, axis=0)
 
         return np.vstack(weighted_doc_vects)
 
@@ -260,9 +268,11 @@ class SearchEngine(object):
         """
 
         # initialize a new index, using a HNSW index on Cosine Similarity
+        # These parameters are important and may need to be optimized to the task in hand
+        index_params = {'M': 30, 'indexThreadQty': 4, 'efConstruction': 100, 'post' : 0}
         matcher = nmslib.init(method='hnsw', space='cosinesimil')
         matcher.addDataPointBatch(vectorized_corpus)
-        matcher.createIndex({'post': 2}, print_progress=True)
+        matcher.createIndex(index_params, print_progress=True)
 
         if save_location:
             matcher.saveIndex(save_location + "/saved_matcher.bin", save_data=False)
