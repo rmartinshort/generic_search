@@ -1,3 +1,7 @@
+"""
+Utility functions to support search_engine codes
+"""
+
 from gensim.models.callbacks import CallbackAny2Vec
 
 class EpochLogger(CallbackAny2Vec):

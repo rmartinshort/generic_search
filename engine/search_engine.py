@@ -1,3 +1,6 @@
+"""
+Search engine classes
+"""
 
 import os
 import string
@@ -20,7 +23,7 @@ class SearchEngine(object):
     def __init__(self):
 
         """
-        Fast fuzzy matching on a corpus held in memory
+
         """
 
         self.spacy_model = spacy.load("en_core_web_sm")
@@ -84,11 +87,16 @@ class SearchEngine(object):
 
         """
 
-        :param original_corpus_file:
-        :param vector_model_file:
-        :param vectorized_corpus:
-        :param matcher:
-        :return:
+        Parameters
+        ----------
+        original_corpus_file
+        vector_model_file
+        vectorized_corpus
+        matcher
+
+        Returns
+        -------
+
         """
 
         logging.info("Loading original corpus")
@@ -124,9 +132,14 @@ class SearchEngine(object):
 
         """
 
-        :param input_query:
-        :param n_return:
-        :return:
+        Parameters
+        ----------
+        input_query
+        n_return
+
+        Returns
+        -------
+
         """
 
         query_parts = self._preprocess(input_query)
@@ -153,9 +166,14 @@ class SearchEngine(object):
 
         """
 
-        :param n_epochs:
-        :param save_location:
-        :return:
+        Parameters
+        ----------
+        n_epochs
+        save_location
+
+        Returns
+        -------
+
         """
 
         logging.info("Tokenizing text")
@@ -194,6 +212,13 @@ class SearchEngine(object):
 
     def _tokenize(self):
 
+        """
+
+        Returns
+        -------
+
+        """
+
         tokenized_text = []
 
         if not self.n_lim:
@@ -213,9 +238,32 @@ class SearchEngine(object):
 
     def _build_vector_vocab(self, tokenized_text):
 
+        """
+
+        Parameters
+        ----------
+        tokenized_text
+
+        Returns
+        -------
+
+        """
+
         self.vector_model.build_vocab(tokenized_text[:self.n_lim])
 
     def _train_vector_model(self, tokenized_text, n_epochs=5):
+
+        """
+
+        Parameters
+        ----------
+        tokenized_text
+        n_epochs
+
+        Returns
+        -------
+
+        """
 
         self.vector_model.train(
             tokenized_text[:self.n_lim],
@@ -225,6 +273,17 @@ class SearchEngine(object):
             callbacks=[self.epoch_logger])
 
     def _assign_weights(self, tokenized_text):
+
+        """
+
+        Parameters
+        ----------
+        tokenized_text
+
+        Returns
+        -------
+
+        """
 
         bm25 = BM25Okapi(tokenized_text[:self.n_lim])
         weighted_doc_vects = []
@@ -254,9 +313,14 @@ class SearchEngine(object):
 
         """
 
-        :param vectorized_corpus:
-        :param save_location:
-        :return:
+        Parameters
+        ----------
+        vectorized_corpus
+        save_location
+
+        Returns
+        -------
+
         """
 
         # initialize a new index, using a HNSW index on Cosine Similarity
@@ -273,6 +337,17 @@ class SearchEngine(object):
             return matcher
 
     def _preprocess(self, text):
+
+        """
+
+        Parameters
+        ----------
+        text
+
+        Returns
+        -------
+
+        """
 
         # remove stopwords?
         return str(text).lower()
