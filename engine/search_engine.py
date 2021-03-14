@@ -1,3 +1,6 @@
+"""
+Search engine classes
+"""
 
 import os
 import string
@@ -20,7 +23,7 @@ class SearchEngine(object):
     def __init__(self):
 
         """
-        Fast fuzzy matching on a corpus held in memory
+
         """
 
         self.spacy_model = spacy.load("en_core_web_sm")
@@ -80,18 +83,21 @@ class SearchEngine(object):
         return s
 
     @classmethod
-    def load_model_from_files(cls, original_corpus_file, vector_model_file, vector_model_type, vectorized_corpus, matcher=None):
+    def load_model_from_files(cls, original_corpus_file, vector_model_file, vectorized_corpus, matcher=None):
 
         """
 
-        :param original_corpus_file:
-        :param vector_model_file:
-        :param vectorized_corpus:
-        :param matcher:
-        :return:
-        """
+        Parameters
+        ----------
+        original_corpus_file
+        vector_model_file
+        vectorized_corpus
+        matcher
 
-        assert vector_model_type in ["doc2vec", "fasttext"]
+        Returns
+        -------
+
+        """
 
         logging.info("Loading original corpus")
 
@@ -106,11 +112,7 @@ class SearchEngine(object):
 
         logging.info("Loading vector model")
         s.corpus = df["text"].str.lower().values
-
-        if vector_model_type == "fasttext":
-            s.vector_model = FastText.load(vector_model_file)
-        else:
-            s.vector_model = Doc2Vec.load(vector_model_file)
+        s.vector_model = FastText.load(vector_model_file)
 
         logging.info("Loading vectorized corpus")
         with open(vectorized_corpus, "rb") as f:
@@ -130,9 +132,14 @@ class SearchEngine(object):
 
         """
 
-        :param input_query:
-        :param n_return:
-        :return:
+        Parameters
+        ----------
+        input_query
+        n_return
+
+        Returns
+        -------
+
         """
 
         query_parts = self._preprocess(input_query)
@@ -159,9 +166,14 @@ class SearchEngine(object):
 
         """
 
-        :param n_epochs:
-        :param save_location:
-        :return:
+        Parameters
+        ----------
+        n_epochs
+        save_location
+
+        Returns
+        -------
+
         """
 
         logging.info("Tokenizing text")
@@ -200,6 +212,13 @@ class SearchEngine(object):
 
     def _tokenize(self):
 
+        """
+
+        Returns
+        -------
+
+        """
+
         tokenized_text = []
 
         if not self.n_lim:
@@ -207,22 +226,44 @@ class SearchEngine(object):
         else:
             self.n_lim = int(self.n_lim)
 
-
         # apply preprocessing to remove punctuation e stc if present
         corpus = [self._preprocess(x) for x in self.corpus]
 
-        for doc in tqdm(self.spacy_model.pipe(corpus, n_threads=4, disable=["tagger", "parser", "ner"])):
-            tokens = [t.text for t in doc if (t.is_ascii and not t.is_punct and not t.is_space)]
-            tokenized_text.append(tokens)
+        for doc in tqdm(self.spacy_model.pipe(corpus, n_threads=2, disable=["tagger", "parser", "ner"])):
+            tok = [t.text for t in doc if (t.is_ascii and not t.is_punct and not t.is_space)]
+            tokenized_text.append(tok)
 
 
         return tokenized_text
 
     def _build_vector_vocab(self, tokenized_text):
 
+        """
+
+        Parameters
+        ----------
+        tokenized_text
+
+        Returns
+        -------
+
+        """
+
         self.vector_model.build_vocab(tokenized_text[:self.n_lim])
 
     def _train_vector_model(self, tokenized_text, n_epochs=5):
+
+        """
+
+        Parameters
+        ----------
+        tokenized_text
+        n_epochs
+
+        Returns
+        -------
+
+        """
 
         self.vector_model.train(
             tokenized_text[:self.n_lim],
@@ -233,13 +274,23 @@ class SearchEngine(object):
 
     def _assign_weights(self, tokenized_text):
 
-        text = tokenized_text[:self.n_lim]
-        bm25 = BM25Okapi(text)
-        weighted_doc_vects = [None]*len(text)
+        """
 
-        for i, doc in tqdm(enumerate(text)):
-            doc_vector = [None]*len(doc)
-            for j, word in enumerate(doc):
+        Parameters
+        ----------
+        tokenized_text
+
+        Returns
+        -------
+
+        """
+
+        bm25 = BM25Okapi(tokenized_text[:self.n_lim])
+        weighted_doc_vects = []
+
+        for i, doc in tqdm(enumerate(tokenized_text[:self.n_lim])):
+            doc_vector = []
+            for word in doc:
 
                 vector = self.vector_model[word]
                 weight = (bm25.idf[word] * ((bm25.k1 + 1.0) * bm25.doc_freqs[i][word])) / (
@@ -247,13 +298,13 @@ class SearchEngine(object):
                         word])
                 weighted_vector = vector * weight
 
-                doc_vector[j] = weighted_vector
+                doc_vector.append(weighted_vector)
 
 
             if len(doc_vector) == 0:
-                weighted_doc_vects[i] = np.zeros(self.vector_model.vector_size)
+                weighted_doc_vects.append(np.zeros(self.vector_model.vector_size))
             else:
-                weighted_doc_vects[i] = np.mean(doc_vector, axis=0)
+                weighted_doc_vects.append(np.mean(doc_vector, axis=0))
 
         return np.vstack(weighted_doc_vects)
 
@@ -262,17 +313,20 @@ class SearchEngine(object):
 
         """
 
-        :param vectorized_corpus:
-        :param save_location:
-        :return:
+        Parameters
+        ----------
+        vectorized_corpus
+        save_location
+
+        Returns
+        -------
+
         """
 
         # initialize a new index, using a HNSW index on Cosine Similarity
-        # These parameters are important and may need to be optimized to the task in hand
-        index_params = {'M': 30, 'indexThreadQty': 4, 'efConstruction': 100, 'post' : 0}
         matcher = nmslib.init(method='hnsw', space='cosinesimil')
         matcher.addDataPointBatch(vectorized_corpus)
-        matcher.createIndex(index_params, print_progress=True)
+        matcher.createIndex({'post': 2}, print_progress=True)
 
         if save_location:
             matcher.saveIndex(save_location + "/saved_matcher.bin", save_data=False)
@@ -283,6 +337,17 @@ class SearchEngine(object):
             return matcher
 
     def _preprocess(self, text):
+
+        """
+
+        Parameters
+        ----------
+        text
+
+        Returns
+        -------
+
+        """
 
         # remove stopwords?
         return str(text).lower()
