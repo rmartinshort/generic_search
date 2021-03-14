@@ -3,7 +3,6 @@ Search engine classes
 """
 
 import os
-import string
 import pandas as pd
 import numpy as np
 import spacy
@@ -83,7 +82,7 @@ class SearchEngine(object):
         return s
 
     @classmethod
-    def load_model_from_files(cls, original_corpus_file, vector_model_file, vectorized_corpus, matcher=None):
+    def load_model_from_files(cls, original_corpus_file, vector_model_file, vector_model_type, vectorized_corpus, matcher=None):
 
         """
 
@@ -99,6 +98,8 @@ class SearchEngine(object):
 
         """
 
+        assert vector_model_type in ["fasttext", "doc2vec"]
+
         logging.info("Loading original corpus")
 
         try:
@@ -112,7 +113,11 @@ class SearchEngine(object):
 
         logging.info("Loading vector model")
         s.corpus = df["text"].str.lower().values
-        s.vector_model = FastText.load(vector_model_file)
+
+        if vector_model_type == "fasttext":
+            s.vector_model = FastText.load(vector_model_file)
+        else:
+            s.vector_model = Doc2Vec.load(vector_model_file)
 
         logging.info("Loading vectorized corpus")
         with open(vectorized_corpus, "rb") as f:
@@ -198,6 +203,9 @@ class SearchEngine(object):
         corpus_weight_vectors = self._assign_weights(tokenized_text)
 
         if save_location:
+            if not os.path.isdir(save_location):
+                os.mkdir(save_location)
+
             logging.info("Saving model")
             if model_type == "fasttext":
                 self.vector_model.save(save_location + '/_fasttext.model')
@@ -229,7 +237,7 @@ class SearchEngine(object):
         # apply preprocessing to remove punctuation e stc if present
         corpus = [self._preprocess(x) for x in self.corpus]
 
-        for doc in tqdm(self.spacy_model.pipe(corpus, n_threads=2, disable=["tagger", "parser", "ner"])):
+        for doc in tqdm(self.spacy_model.pipe(corpus, disable=["tagger", "parser", "ner"])):
             tok = [t.text for t in doc if (t.is_ascii and not t.is_punct and not t.is_space)]
             tokenized_text.append(tok)
 
@@ -326,7 +334,7 @@ class SearchEngine(object):
         # initialize a new index, using a HNSW index on Cosine Similarity
         matcher = nmslib.init(method='hnsw', space='cosinesimil')
         matcher.addDataPointBatch(vectorized_corpus)
-        matcher.createIndex({'post': 2}, print_progress=True)
+        matcher.createIndex({'M': 30, 'indexThreadQty': 4, 'efConstruction': 100, 'post': 0}, print_progress=True)
 
         if save_location:
             matcher.saveIndex(save_location + "/saved_matcher.bin", save_data=False)
