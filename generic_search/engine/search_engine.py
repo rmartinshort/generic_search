@@ -237,7 +237,7 @@ class SearchEngine(object):
         # apply preprocessing to remove punctuation e stc if present
         corpus = [self._preprocess(x) for x in self.corpus]
 
-        for doc in tqdm(self.spacy_model.pipe(corpus, disable=["tagger", "parser", "ner"])):
+        for doc in tqdm(self.spacy_model.pipe(corpus, disable=["lemmatizer","tagger", "parser", "ner"])):
             tok = [t.text for t in doc if (t.is_ascii and not t.is_punct and not t.is_space)]
             tokenized_text.append(tok)
 
