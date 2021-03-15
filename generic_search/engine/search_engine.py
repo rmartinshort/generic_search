@@ -293,12 +293,13 @@ class SearchEngine(object):
 
         """
 
-        bm25 = BM25Okapi(tokenized_text[:self.n_lim])
-        weighted_doc_vects = []
+        text = tokenized_text[:self.n_lim]
+        bm25 = BM25Okapi(text)
+        weighted_doc_vects = [None]*len(text)
 
         for i, doc in tqdm(enumerate(tokenized_text[:self.n_lim])):
-            doc_vector = []
-            for word in doc:
+            doc_vector = [None]*len(doc)
+            for j, word in enumerate(doc):
 
                 vector = self.vector_model[word]
                 weight = (bm25.idf[word] * ((bm25.k1 + 1.0) * bm25.doc_freqs[i][word])) / (
@@ -306,13 +307,13 @@ class SearchEngine(object):
                         word])
                 weighted_vector = vector * weight
 
-                doc_vector.append(weighted_vector)
+                doc_vector[j] = weighted_vector
 
 
             if len(doc_vector) == 0:
-                weighted_doc_vects.append(np.zeros(self.vector_model.vector_size))
+                weighted_doc_vects[i] = np.zeros(self.vector_model.vector_size)
             else:
-                weighted_doc_vects.append(np.mean(doc_vector, axis=0))
+                weighted_doc_vects[i] = np.mean(doc_vector, axis=0)
 
         return np.vstack(weighted_doc_vects)
 
