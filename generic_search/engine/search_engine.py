@@ -2,19 +2,20 @@
 Search engine classes
 """
 
-import os
-import pandas as pd
-import numpy as np
-import spacy
 import logging
-import gensim
-from gensim.models.fasttext import FastText
-from gensim.models.doc2vec import Doc2Vec, TaggedDocument
-from generic_search.engine.utils import EpochLogger
-from tqdm import tqdm
-import nmslib
-from rank_bm25 import BM25Okapi
+import os
 import pickle
+
+import gensim
+import nmslib
+import numpy as np
+import pandas as pd
+import spacy
+from generic_search.engine.utils import EpochLogger
+from gensim.models.doc2vec import Doc2Vec, TaggedDocument
+from gensim.models.fasttext import FastText
+from rank_bm25 import BM25Okapi
+from tqdm import tqdm
 
 
 class SearchEngine(object):
@@ -67,7 +68,6 @@ class SearchEngine(object):
         :return:
         """
 
-
         if save_location:
             if not os.path.isdir(save_location):
                 os.mkdir(save_location)
@@ -82,7 +82,8 @@ class SearchEngine(object):
         return s
 
     @classmethod
-    def load_model_from_files(cls, original_corpus_file, vector_model_file, vector_model_type, vectorized_corpus, matcher=None):
+    def load_model_from_files(cls, original_corpus_file, vector_model_file, vector_model_type, vectorized_corpus,
+                              matcher=None):
 
         """
 
@@ -139,12 +140,15 @@ class SearchEngine(object):
 
         Parameters
         ----------
-        input_query
-        n_return
+        input_query : str
+            User input query
+        n_return : int, optional
+            The number of matches to return
 
         Returns
         -------
-
+        pandas.DataFrame
+            The top n matches using the search
         """
 
         query_parts = self._preprocess(input_query)
@@ -173,21 +177,27 @@ class SearchEngine(object):
 
         Parameters
         ----------
-        n_epochs
-        save_location
+        n_epochs : int, optional
+            The number of training epochs for self.vector_model
+        save_location : str, optional
+            The path the a directory where the model files will be written. No files
+            will be written if this is set to None
 
         Returns
         -------
+        np.ndarray
+            Vecotized corpus
+
 
         """
 
         logging.info("Tokenizing text")
         tokenized_text = self._tokenize()
 
-        if isinstance(self.vector_model,gensim.models.fasttext.FastText):
+        if isinstance(self.vector_model, gensim.models.fasttext.FastText):
             model_type = "fasttext"
             model_text_feed = tokenized_text
-        elif isinstance(self.vector_model,gensim.models.doc2vec.Doc2Vec):
+        elif isinstance(self.vector_model, gensim.models.doc2vec.Doc2Vec):
             model_type = "doc2vec"
             model_text_feed = [TaggedDocument(doc, [i]) for i, doc in enumerate(tokenized_text)]
         else:
@@ -208,11 +218,11 @@ class SearchEngine(object):
 
             logging.info("Saving model")
             if model_type == "fasttext":
-                self.vector_model.save(save_location + '/_fasttext.model')
+                self.vector_model.save(os.path.join(save_location, "_fasttext.model"))
             else:
-                self.vector_model.save(save_location + '/_doc2vec.model')
+                self.vector_model.save(os.path.join(save_location, "_doc2vec.model"))
 
-            f = open(save_location + "/weighted_doc_vects.p", "wb")
+            f = open(os.path.join(save_location, "weighted_doc_vects.p"), "wb")
             pickle.dump(corpus_weight_vectors, f)
             f.close()
 
@@ -237,10 +247,9 @@ class SearchEngine(object):
         # apply preprocessing to remove punctuation e stc if present
         corpus = [self._preprocess(x) for x in self.corpus]
 
-        for doc in tqdm(self.spacy_model.pipe(corpus, disable=["lemmatizer","tagger", "parser", "ner"])):
+        for doc in tqdm(self.spacy_model.pipe(corpus, disable=["lemmatizer", "tagger", "parser", "ner"])):
             tok = [t.text for t in doc if (t.is_ascii and not t.is_punct and not t.is_space)]
             tokenized_text.append(tok)
-
 
         return tokenized_text
 
@@ -265,12 +274,14 @@ class SearchEngine(object):
 
         Parameters
         ----------
-        tokenized_text
-        n_epochs
+        tokenized_text : list of list of str
+            A corpys where each element is a doc and the docs are tokenized
+        n_epochs : int, optional
+            The number of training epochs for the vector model
 
         Returns
         -------
-
+        Updates self.vector_model
         """
 
         self.vector_model.train(
@@ -295,20 +306,18 @@ class SearchEngine(object):
 
         text = tokenized_text[:self.n_lim]
         bm25 = BM25Okapi(text)
-        weighted_doc_vects = [None]*len(text)
+        weighted_doc_vects = [None] * len(text)
 
         for i, doc in tqdm(enumerate(tokenized_text[:self.n_lim])):
-            doc_vector = [None]*len(doc)
+            doc_vector = [None] * len(doc)
             for j, word in enumerate(doc):
-
                 vector = self.vector_model[word]
                 weight = (bm25.idf[word] * ((bm25.k1 + 1.0) * bm25.doc_freqs[i][word])) / (
-                            bm25.k1 * (1.0 - bm25.b + bm25.b * (bm25.doc_len[i] / bm25.avgdl)) + bm25.doc_freqs[i][
-                        word])
+                        bm25.k1 * (1.0 - bm25.b + bm25.b * (bm25.doc_len[i] / bm25.avgdl)) + bm25.doc_freqs[i][
+                    word])
                 weighted_vector = vector * weight
 
                 doc_vector[j] = weighted_vector
-
 
             if len(doc_vector) == 0:
                 weighted_doc_vects[i] = np.zeros(self.vector_model.vector_size)
@@ -318,29 +327,50 @@ class SearchEngine(object):
         return np.vstack(weighted_doc_vects)
 
     @staticmethod
-    def generate_matcher(vectorized_corpus, save_location=None):
+    def generate_matcher(vectorized_corpus, save_location=None, **kwargs):
 
         """
+        Build a new nmslib matcher using a vectorized corpus. Note that the nmslib paramters
+        are currently hardcoded if not specified
 
         Parameters
         ----------
-        vectorized_corpus
-        save_location
+        vectorized_corpus : np.ndarray
+        save_location : str, optional
+        **kwargs
+        Keyword arguments to be fed into nmslib. The default values are often sufficient
 
         Returns
         -------
-
+            nmslib index object
         """
 
+        if isinstance(kwargs, dict):
+
+            nmslib_method = kwargs.get("method", "hnsw")
+            nmslib_space = kwargs.get("space", "cosinesimil")
+            nmslib_M = kwargs.get("M", 30)
+            nmslib_indexThreadQty = kwargs.get("indexThreadQty", 4)
+            nmslib_efConstruction = kwargs.get("efConstruction", 100)
+            nmslib_post = kwargs.get("post", 0)
+            matcher_params = {'M': nmslib_M,
+                              'indexThreadQty': nmslib_indexThreadQty,
+                              'efConstruction': nmslib_efConstruction,
+                              'post': nmslib_post}
+        else:
+            nmslib_method = "hnsw"
+            nmslib_space = "cosinesimil"
+            matcher_params = {'M': 30, 'indexThreadQty': 4, 'efConstruction': 100, 'post': 0}
+
         # initialize a new index, using a HNSW index on Cosine Similarity
-        matcher = nmslib.init(method='hnsw', space='cosinesimil')
+        matcher = nmslib.init(method=nmslib_method, space=nmslib_space)
         matcher.addDataPointBatch(vectorized_corpus)
-        matcher.createIndex({'M': 30, 'indexThreadQty': 4, 'efConstruction': 100, 'post': 0}, print_progress=True)
+        matcher.createIndex(matcher_params, print_progress=True)
 
         if save_location:
-            matcher.saveIndex(save_location + "/saved_matcher.bin", save_data=False)
-            new_matcher = nmslib.init(method='hnsw', space='cosinesimil')
-            new_matcher.loadIndex(save_location + "/saved_matcher.bin", load_data=False)
+            matcher.saveIndex(os.path.join(save_location, "saved_matcher.bin"), save_data=False)
+            new_matcher = nmslib.init(method=nmslib_method, space=nmslib_space)
+            new_matcher.loadIndex(os.path.join(save_location, "saved_matcher.bin"), load_data=False)
             return new_matcher
         else:
             return matcher
