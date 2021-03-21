@@ -35,7 +35,7 @@ setup(
     install_requires=requirements,
     license="MIT license",
     long_description=readme + '\n\n' + history,
-    keywords='genericsearch',
+    keywords='genericsearch_test_empty',
     name="generic_search",
     packages=find_packages(include=["generic_search", "generic_search.*"]),
     setup_requires=setup_requirements,
