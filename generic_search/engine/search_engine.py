@@ -29,12 +29,14 @@ class SearchEngine(object):
         self.spacy_model = spacy.load("en_core_web_sm")
         self.epoch_logger = EpochLogger()
         self.corpus = None
+        self.matching_list = None 
+        self.matching_list_is_corpus = False
         self.vector_model = None
         self.n_lim = None
         self.matcher = None
 
     @classmethod
-    def build_model(cls, corpus, vector_model, n_epochs=5, limit_docs=1e6, save_location=None):
+    def build_model(cls, corpus, vector_model, matching_list=None, n_epochs=5, limit_docs=1e6, save_location=None):
 
         """
 
@@ -74,6 +76,15 @@ class SearchEngine(object):
 
         s = SearchEngine()
         s.corpus = corpus
+
+        if not matching_list:
+            #If this is the case, we want to match on the same corpus as we trained on
+            s.matching_list = corpus
+            s.matching_list_is_corpus = True
+        else:
+            # If this is the case, we train on one corpus and match on another
+            s.matching_list = matching_list
+
         s.vector_model = vector_model
         s.n_lim = limit_docs
         corpus_weight_vectors = s.generate_vectorized_corpus(n_epochs=n_epochs, save_location=save_location)
@@ -82,7 +93,7 @@ class SearchEngine(object):
         return s
 
     @classmethod
-    def load_model_from_files(cls, original_corpus_file, vector_model_file, vector_model_type, vectorized_corpus,
+    def load_model_from_files(cls, original_matching_list, vector_model_file, vector_model_type, vectorized_corpus,
                               matcher=None):
 
         """
@@ -100,20 +111,14 @@ class SearchEngine(object):
         """
 
         assert vector_model_type in ["fasttext", "doc2vec"]
-
-        logging.info("Loading original corpus")
-
-        try:
-            df = pd.read_csv(original_corpus_file, usecols=["text"])
-        except Exception as e:
-            raise Warning("Provided dataframe may not have a text column!")
-
-        assert "text" in df.columns
+        assert isinstance(original_matching_list,list) 
 
         s = SearchEngine()
 
         logging.info("Loading vector model")
-        s.corpus = df["text"].str.lower().values
+        s.corpus = original_matching_list
+        s.matching_list = original_matching_list
+        s.matching_list_is_corpus = True
 
         if vector_model_type == "fasttext":
             s.vector_model = FastText.load(vector_model_file)
@@ -165,7 +170,7 @@ class SearchEngine(object):
         k = 0
         for i, j in zip(ids, distances):
             distances_list[k] = j
-            results_list[k] = self.corpus[i]
+            results_list[k] = self.matching_list[i]
             original_query_list[k] = input_query
             k += 1
 
@@ -210,7 +215,12 @@ class SearchEngine(object):
         self._train_vector_model(model_text_feed, n_epochs=n_epochs)
 
         logging.info("Generating BM25 weights")
-        corpus_weight_vectors = self._assign_weights(tokenized_text)
+        if self.matching_list_is_corpus:
+            self.matching_list = self.corpus
+            weight_vectors = self._assign_weights(tokenized_text)
+        else:
+            tokenized_text = self._tokenize_match_list()
+            weight_vectors = self._assign_weights(tokenized_text)
 
         if save_location:
             if not os.path.isdir(save_location):
@@ -223,10 +233,10 @@ class SearchEngine(object):
                 self.vector_model.save(os.path.join(save_location, "_doc2vec.model"))
 
             f = open(os.path.join(save_location, "weighted_doc_vects.p"), "wb")
-            pickle.dump(corpus_weight_vectors, f)
+            pickle.dump(weight_vectors, f)
             f.close()
 
-        return corpus_weight_vectors
+        return weight_vectors
 
     def _tokenize(self):
 
@@ -246,6 +256,26 @@ class SearchEngine(object):
 
         # apply preprocessing to remove punctuation e stc if present
         corpus = [self._preprocess(x) for x in self.corpus]
+
+        for doc in tqdm(self.spacy_model.pipe(corpus, disable=["lemmatizer", "tagger", "parser", "ner"])):
+            tok = [t.text for t in doc if (t.is_ascii and not t.is_punct and not t.is_space)]
+            tokenized_text.append(tok)
+
+        return tokenized_text
+
+    def _tokenize_match_list(self):
+
+        """
+
+        Returns
+        -------
+
+        """
+
+        tokenized_text = []
+
+        # apply preprocessing to remove punctuation e stc if present
+        corpus = [self._preprocess(x) for x in self.matching_list]
 
         for doc in tqdm(self.spacy_model.pipe(corpus, disable=["lemmatizer", "tagger", "parser", "ner"])):
             tok = [t.text for t in doc if (t.is_ascii and not t.is_punct and not t.is_space)]
