@@ -114,7 +114,7 @@ class SearchEngine(object):
 
         """
 
-        assert vector_model_type in ["fasttext", "doc2vec"]
+        assert vector_model_type in ["fasttext", "doc2vec", "tfidf"]
         assert isinstance(original_matching_list,list)
 
         s = SearchEngine()
@@ -131,23 +131,23 @@ class SearchEngine(object):
         elif vector_model_type == "tfidf":
             s.vector_model = joblib.load(vector_model_file)
 
-        s.vector_model_type == vector_model_type
+        s.vector_model_type = vector_model_type
 
         logging.info("Loading vectorized corpus")
         with open(vectorized_corpus, "rb") as f:
             vectorized_corpus = pickle.load(f)
 
+        logging.info("Generating matcher index")
         if matcher:
             if vector_model_type == "tfidf":
-                new_matcher = nmslib.init(method='simple_invindx', space='negdotprod_sparse_fast',
-                                    data_type=nmslib.DataType.SPARSE_VECTOR)
+                # Cannot load and save matchers of this type, but they are fast to generate
+                s.matcher = s.generate_matcher(vectorized_corpus, save_location=None)
             else:
                 new_matcher = nmslib.init(method='hnsw', space='cosinesimil')
 
             new_matcher.loadIndex(matcher, load_data=False)
             s.matcher = new_matcher
         else:
-            logging.info("Generating matcher index")
             s.matcher = s.generate_matcher(vectorized_corpus, save_location=None)
 
         return s
