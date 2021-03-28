@@ -5,14 +5,16 @@ Search engine classes
 import logging
 import os
 import pickle
+import joblib
 
 import gensim
 import nmslib
 import numpy as np
 import pandas as pd
 import spacy
-from generic_search.engine.utils import EpochLogger
+from generic_search.engine.utils import EpochLogger, ngrams_chars
 from gensim.models.doc2vec import Doc2Vec, TaggedDocument
+import sklearn
 from gensim.models.fasttext import FastText
 from rank_bm25 import BM25Okapi
 from tqdm import tqdm
@@ -29,14 +31,15 @@ class SearchEngine(object):
         self.spacy_model = spacy.load("en_core_web_sm")
         self.epoch_logger = EpochLogger()
         self.corpus = None
-        self.matching_list = None 
+        self.matching_list = None
         self.matching_list_is_corpus = False
         self.vector_model = None
         self.n_lim = None
         self.matcher = None
+        self.vector_model_type = None
 
     @classmethod
-    def build_model(cls, corpus, vector_model, matching_list=None, n_epochs=5, limit_docs=1e6, save_location=None):
+    def build_model(cls, corpus, vector_model=None, matching_list=None, n_epochs=5, limit_docs=1e6, save_location=None):
 
         """
 
@@ -52,13 +55,13 @@ class SearchEngine(object):
         min_n=1,  # min character n-gram
         max_n=5  # max character n-gram
         )
-        
+
         # For Doc2Vec
-        doc_model = Doc2Vec( 
-        vector_size=50, 
+        doc_model = Doc2Vec(
+        vector_size=50,
         window=3,
         epochs=10,
-        min_count=1, 
+        min_count=1,
         negative=15,
         workers=4)
 
@@ -76,6 +79,7 @@ class SearchEngine(object):
 
         s = SearchEngine()
         s.corpus = corpus
+        s.n_lim = limit_docs
 
         if not matching_list:
             #If this is the case, we want to match on the same corpus as we trained on
@@ -86,9 +90,9 @@ class SearchEngine(object):
             s.matching_list = matching_list
 
         s.vector_model = vector_model
-        s.n_lim = limit_docs
-        corpus_weight_vectors = s.generate_vectorized_corpus(n_epochs=n_epochs, save_location=save_location)
-        s.matcher = s.generate_matcher(corpus_weight_vectors, save_location=save_location)
+        corpus_weight_vectors, model_type = s.generate_vectorized_corpus(n_epochs=n_epochs, save_location=save_location)
+
+        s.matcher = s.generate_matcher(corpus_weight_vectors, save_location=save_location, model_type=model_type)
 
         return s
 
@@ -111,7 +115,7 @@ class SearchEngine(object):
         """
 
         assert vector_model_type in ["fasttext", "doc2vec"]
-        assert isinstance(original_matching_list,list) 
+        assert isinstance(original_matching_list,list)
 
         s = SearchEngine()
 
@@ -122,15 +126,24 @@ class SearchEngine(object):
 
         if vector_model_type == "fasttext":
             s.vector_model = FastText.load(vector_model_file)
-        else:
+        elif vector_model_type == "doc2vec":
             s.vector_model = Doc2Vec.load(vector_model_file)
+        elif vector_model_type == "tfidf":
+            s.vector_model = joblib.load(vector_model_file)
+
+        s.vector_model_type == vector_model_type
 
         logging.info("Loading vectorized corpus")
         with open(vectorized_corpus, "rb") as f:
             vectorized_corpus = pickle.load(f)
 
         if matcher:
-            new_matcher = nmslib.init(method='hnsw', space='cosinesimil')
+            if vector_model_type == "tfidf":
+                new_matcher = nmslib.init(method='simple_invindx', space='negdotprod_sparse_fast',
+                                    data_type=nmslib.DataType.SPARSE_VECTOR)
+            else:
+                new_matcher = nmslib.init(method='hnsw', space='cosinesimil')
+
             new_matcher.loadIndex(matcher, load_data=False)
             s.matcher = new_matcher
         else:
@@ -158,10 +171,13 @@ class SearchEngine(object):
 
         query_parts = self._preprocess(input_query)
 
-        query = [self.vector_model[w] for w in query_parts.split()]
-        query = np.mean(query, axis=0)
-
-        ids, distances = self.matcher.knnQuery(query, k=n_return)
+        if self.vector_model_type == "tfidf":
+            query = self.vector_model.transform([query_parts])
+            ids, distances = self.matcher.knnQueryBatch(query, k=n_return)[0]
+        else:
+            query = [self.vector_model[w] for w in query_parts.split()]
+            query = np.mean(query, axis=0)
+            ids, distances = self.matcher.knnQuery(query, k=n_return)
 
         # Display results of a search
         distances_list = [None] * len(distances)
@@ -196,31 +212,49 @@ class SearchEngine(object):
 
         """
 
-        logging.info("Tokenizing text")
-        tokenized_text = self._tokenize()
-
-        if isinstance(self.vector_model, gensim.models.fasttext.FastText):
+        if isinstance(self.vector_model, sklearn.feature_extraction.text.TfidfVectorizer):
+            model_type = "tfidf"
+        elif isinstance(self.vector_model, gensim.models.fasttext.FastText):
             model_type = "fasttext"
-            model_text_feed = tokenized_text
         elif isinstance(self.vector_model, gensim.models.doc2vec.Doc2Vec):
             model_type = "doc2vec"
-            model_text_feed = [TaggedDocument(doc, [i]) for i, doc in enumerate(tokenized_text)]
         else:
-            raise Warning("vector model must be of type gensim FastText or genism Doc2Vec")
+            raise Warning("vector model must be of type gensim FastText, genism Doc2Vec or sklearn TfidfVectorizer")
+        self.vector_model_type = model_type
 
-        logging.info("Building vector vocab")
-        self._build_vector_vocab(model_text_feed)
+        logging.info("Tokenizing text")
+        tokenized_text = self._tokenize(model_type=model_type)
 
-        logging.info("Training word vector model")
-        self._train_vector_model(model_text_feed, n_epochs=n_epochs)
+        if model_type == "tfidf":
+            model_text_feed = tokenized_text
+            self.vector_model.fit(model_text_feed)
 
-        logging.info("Generating BM25 weights")
-        if self.matching_list_is_corpus:
-            self.matching_list = self.corpus
-            weight_vectors = self._assign_weights(tokenized_text)
+            if self.matching_list_is_corpus:
+                self.matching_list = self.corpus
+            else:
+                model_text_feed = self._tokenize_match_list(model_type="tfidf")
+            weight_vectors = self.vector_model.transform(model_text_feed)
+
         else:
-            tokenized_text = self._tokenize_match_list()
-            weight_vectors = self._assign_weights(tokenized_text)
+
+            if model_type == "fasttext":
+                model_text_feed = tokenized_text
+            elif model_type == "doc2vec":
+                model_text_feed = [TaggedDocument(doc, [i]) for i, doc in enumerate(tokenized_text)]
+
+            logging.info("Building vector vocab")
+            self._build_vector_vocab(model_text_feed)
+
+            logging.info("Training word vector model")
+            self._train_vector_model(model_text_feed, n_epochs=n_epochs)
+
+            logging.info("Generating BM25 weights")
+            if self.matching_list_is_corpus:
+                self.matching_list = self.corpus
+                weight_vectors = self._assign_weights(tokenized_text)
+            else:
+                tokenized_text = self._tokenize_match_list(model_type=model_type)
+                weight_vectors = self._assign_weights(tokenized_text)
 
         if save_location:
             if not os.path.isdir(save_location):
@@ -229,16 +263,18 @@ class SearchEngine(object):
             logging.info("Saving model")
             if model_type == "fasttext":
                 self.vector_model.save(os.path.join(save_location, "_fasttext.model"))
-            else:
+            elif model_type == "doc2vec":
                 self.vector_model.save(os.path.join(save_location, "_doc2vec.model"))
+            else:
+                joblib.dump(self.vector_model,os.path.join(save_location, "_tfidf.model"))
 
             f = open(os.path.join(save_location, "weighted_doc_vects.p"), "wb")
             pickle.dump(weight_vectors, f)
             f.close()
 
-        return weight_vectors
+        return weight_vectors, model_type
 
-    def _tokenize(self):
+    def _tokenize(self, model_type="tfidf"):
 
         """
 
@@ -246,8 +282,6 @@ class SearchEngine(object):
         -------
 
         """
-
-        tokenized_text = []
 
         if not self.n_lim:
             self.n_lim = len(self.corpus) - 1
@@ -257,13 +291,19 @@ class SearchEngine(object):
         # apply preprocessing to remove punctuation e stc if present
         corpus = [self._preprocess(x) for x in self.corpus]
 
-        for doc in tqdm(self.spacy_model.pipe(corpus, disable=["lemmatizer", "tagger", "parser", "ner"])):
-            tok = [t.text for t in doc if (t.is_ascii and not t.is_punct and not t.is_space)]
-            tokenized_text.append(tok)
+        if model_type in ["fasttext","doc2vec"]:
+
+            tokenized_text = []
+            for doc in tqdm(self.spacy_model.pipe(corpus, disable=["lemmatizer", "tagger", "parser", "ner"])):
+                tok = [t.text for t in doc if (t.is_ascii and not t.is_punct and not t.is_space)]
+                tokenized_text.append(tok)
+
+        else:
+            tokenized_text = corpus
 
         return tokenized_text
 
-    def _tokenize_match_list(self):
+    def _tokenize_match_list(self, model_type="tfidf"):
 
         """
 
@@ -272,14 +312,18 @@ class SearchEngine(object):
 
         """
 
-        tokenized_text = []
-
         # apply preprocessing to remove punctuation e stc if present
         corpus = [self._preprocess(x) for x in self.matching_list]
 
-        for doc in tqdm(self.spacy_model.pipe(corpus, disable=["lemmatizer", "tagger", "parser", "ner"])):
-            tok = [t.text for t in doc if (t.is_ascii and not t.is_punct and not t.is_space)]
-            tokenized_text.append(tok)
+        if model_type in ["fasttext","doc2vec"]:
+
+            tokenized_text = []
+            for doc in tqdm(self.spacy_model.pipe(corpus, disable=["lemmatizer", "tagger", "parser", "ner"])):
+                tok = [t.text for t in doc if (t.is_ascii and not t.is_punct and not t.is_space)]
+                tokenized_text.append(tok)
+
+        else:
+            tokenized_text = corpus
 
         return tokenized_text
 
@@ -357,7 +401,7 @@ class SearchEngine(object):
         return np.vstack(weighted_doc_vects)
 
     @staticmethod
-    def generate_matcher(vectorized_corpus, save_location=None, **kwargs):
+    def generate_matcher(vectorized_corpus, save_location=None, model_type="tfidf", **kwargs):
 
         """
         Build a new nmslib matcher using a vectorized corpus. Note that the nmslib paramters
@@ -375,31 +419,50 @@ class SearchEngine(object):
             nmslib index object
         """
 
-        if isinstance(kwargs, dict):
+        if model_type == "tfidf":
 
-            nmslib_method = kwargs.get("method", "hnsw")
-            nmslib_space = kwargs.get("space", "cosinesimil")
-            nmslib_M = kwargs.get("M", 30)
-            nmslib_indexThreadQty = kwargs.get("indexThreadQty", 4)
-            nmslib_efConstruction = kwargs.get("efConstruction", 100)
-            nmslib_post = kwargs.get("post", 0)
-            matcher_params = {'M': nmslib_M,
+            # This is the case if we have a tfidf matcher, where the params have
+            # already be specified
+            nmslib_method = kwargs.get("method", "simple_invindx")
+            nmslib_space = kwargs.get("space", "negdotprod_sparse_fast")
+            nmslib_data_type = kwargs.get("data_type", nmslib.DataType.SPARSE_VECTOR)
+            matcher_params = {}
+            matcher = nmslib.init(method=nmslib_method, space=nmslib_space, data_type=nmslib_data_type)
+
+        else:
+
+            if isinstance(kwargs,dict):
+
+                nmslib_method = kwargs.get("method", "hnsw")
+                nmslib_space = kwargs.get("space", "cosinesimil")
+                nmslib_M = kwargs.get("M", 30)
+                nmslib_indexThreadQty = kwargs.get("indexThreadQty", 4)
+                nmslib_efConstruction = kwargs.get("efConstruction", 100)
+                nmslib_post = kwargs.get("post", 0)
+                data_type = "auto"
+                matcher_params = {'M': nmslib_M,
                               'indexThreadQty': nmslib_indexThreadQty,
                               'efConstruction': nmslib_efConstruction,
                               'post': nmslib_post}
-        else:
-            nmslib_method = "hnsw"
-            nmslib_space = "cosinesimil"
-            matcher_params = {'M': 30, 'indexThreadQty': 4, 'efConstruction': 100, 'post': 0}
+            else:
+                nmslib_method = "hnsw"
+                nmslib_space = "cosinesimil"
+                matcher_params = {'M': 30, 'indexThreadQty': 4, 'efConstruction': 100, 'post': 0}
 
-        # initialize a new index, using a HNSW index on Cosine Similarity
-        matcher = nmslib.init(method=nmslib_method, space=nmslib_space)
+            matcher = nmslib.init(method=nmslib_method, space=nmslib_space)
+
+
         matcher.addDataPointBatch(vectorized_corpus)
         matcher.createIndex(matcher_params, print_progress=True)
 
-        if save_location:
+        if save_location and model_type != "tfidf":
             matcher.saveIndex(os.path.join(save_location, "saved_matcher.bin"), save_data=False)
-            new_matcher = nmslib.init(method=nmslib_method, space=nmslib_space)
+            if model_type in ["fasttext","doc2vec"]:
+                new_matcher = nmslib.init(method=nmslib_method, space=nmslib_space)
+            elif model_type in ["tfidf"]:
+                new_matcher = nmslib.init(method=nmslib_method, space=nmslib_space, data_type=nmslib_data_type)
+            else:
+                raise ValueError("model type unknown to matcher")
             new_matcher.loadIndex(os.path.join(save_location, "saved_matcher.bin"), load_data=False)
             return new_matcher
         else:
