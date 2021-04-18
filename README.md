@@ -1,3 +1,6 @@
+[![codecov](https://codecov.io/gh/rmartinshort/generic_search/branch/main/graph/badge.svg)](https://codecov.io/gh/rmartinshort/generic_search)
+[![Build Status](https://travis-ci.com/rmartinshort/generic_search.svg?branch=main)](https://travis-ci.com/rmartinshort/generic_search)
+
 # Generic Search
 
 ---
