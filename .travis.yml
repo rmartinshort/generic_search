@@ -2,15 +2,17 @@
 
 language: python
 python:
-  - 3.8
-  - 3.7
-  - 3.6
-  - 3.5
+  - "3.7"
 
 # Command to install dependencies, e.g. pip install -r requirements_dev.txt --use-mirrors
-install: pip install -U tox-travis
+install:
+    - pip install -r requirements_dev.txt
+    - pip install pytest-cov codecov
 
 # Command to run tests, e.g. python setup.py test
-script: tox
+script:
+    - pytest --cov=generic_search tests
+after_success:
+    - codecov
 
 
