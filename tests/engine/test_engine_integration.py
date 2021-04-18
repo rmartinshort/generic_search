@@ -4,11 +4,14 @@ import os
 import pandas as pd
 from gensim.models.doc2vec import Doc2Vec
 from gensim.models.fasttext import FastText
+import nltk
 from nltk.tokenize import sent_tokenize
 from sklearn.feature_extraction.text import TfidfVectorizer
 
 from generic_search import SearchEngine
 from generic_search.engine.utils import ngrams_chars
+
+nltk.download('punkt')
 
 
 def test_all_integration_fasttext():
